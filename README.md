@@ -261,7 +261,7 @@ Find the SARIF artifact under **Actions → Security checks → run → Artifact
 
 Actions are pinned to commit SHAs. Dependabot proposes weekly Action updates; Terraform/tfsec/Trivy binary versions are explicit and should be reviewed when upgrading. Token permissions default to read; only the report job requests `security-events: write`. Checkout does not persist Git credentials. The workflow does not run attack traffic against AWS.
 
-For merge enforcement, the four check names above are the required status-check contexts on `master`. Repository administrators retain the standard bypass; ordinary changes should go through a pull request and passing checks. The first real Actions execution and Security UI verification require the workflow to be pushed; local validation does not substitute for that hosted run.
+For merge enforcement, the four check names above are the required status-check contexts on `master`. Repository administrators retain the standard bypass; ordinary changes should go through a pull request and passing checks. The [first hosted run](https://github.com/yuspax/SecVault-AWS/actions/runs/40196510189) passed all four jobs. Its SARIF artifact was downloaded and verified, and GitHub accepted the Trivy analysis with 105 findings across 94 rules in [Security → Code scanning](https://github.com/yuspax/SecVault-AWS/security/code-scanning).
 
 After publication, inspect the automatic run or trigger a fresh one:
 
@@ -324,4 +324,4 @@ CloudWatch confirmed **29 WAF BLOCK events**: 25 custom-rule matches, 1 SQLi rul
 
 All **34 application resources were then destroyed**. Read-only verification completed at **13:49:58 Europe/Warsaw**: application state empty, ALB/VPC/WAF/alarm/log groups/execution role absent, NAT deleted, Elastic IP released, and ECS inactive with no running tasks. The six bootstrap resources were retained. The account remained `FREE / ACTIVE`; final credit accounting can arrive later, so no exact-cost or zero-credit-consumption claim is made.
 
-The application is currently undeployed. This demo verifies the AWS path; the first hosted GitHub Actions run and SARIF publication remain pending until push.
+The application is currently undeployed. Both the AWS demo and the hosted GitHub Actions pipeline have been verified, including SARIF artifact creation and publication to GitHub Security.
