@@ -1,0 +1,129 @@
+name: Security checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  terraform:
+    name: Terraform security (${{ matrix.directory }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: [bootstrap, terraform]
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.1
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Scan Terraform (blocking HIGH and CRITICAL findings)
+        uses: aquasecurity/tfsec-action@b466648d6e39e7c75324f25d83891162a721f2d6 # v1.0.3
+        with:
+          working_directory: ${{ matrix.directory }}
+          version: v1.28.14
+          additional_args: --minimum-severity HIGH
+          github_token: ${{ github.token }}
+
+      # Static validation needs providers, but no AWS credentials or remote state.
+      - name: Initialize providers
+        run: terraform init -backend=false -input=false -lockfile=readonly
+
+      - name: Validate Terraform
+        run: terraform validate -no-color
+
+  scripts:
+    name: Script checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check Bash syntax
+        run: bash -n scripts/chaos_test.sh
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/*.sh
+
+  image:
+    name: Juice Shop CVE report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Terraform reads the same file, so CI scans the image we actually deploy.
+      - name: Read pinned image reference
+        id: image
+        shell: bash
+        run: |
+          image="$(cat terraform/juice-shop-image.txt)"
+          if [[ ! "$image" =~ ^bkimminich/juice-shop:v[0-9]+\.[0-9]+\.[0-9]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "Expected a versioned Juice Shop image pinned by SHA-256 digest" >&2
+            exit 1
+          fi
+          echo "ref=$image" >> "$GITHUB_OUTPUT"
+
+      # Juice Shop is intentionally vulnerable: CVEs are reported, not suppressed.
+      # Registry/download/scanner errors still fail this step.
+      - name: Scan Juice Shop image (non-blocking CVEs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.1
+          scan-type: image
+          image-ref: ${{ steps.image.outputs.ref }}
+          scanners: vuln
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+          timeout: 10m
+        env:
+          TRIVY_PLATFORM: linux/amd64
+          TRIVY_IMAGE_SRC: remote
+
+      - name: Save SARIF report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: juice-shop-trivy-sarif
+          path: trivy-results.sarif
+          if-no-files-found: error
+          retention-days: 7
+
+      # Fork PRs have a restricted token. The artifact remains available there.
+      # This public repository supports Code Scanning. Upload errors are real CI
+      # failures; intentionally vulnerable image findings still exit with code 0.
+      - name: Publish report to GitHub Security
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: juice-shop-image
